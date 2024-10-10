@@ -1,13 +1,20 @@
-from tkinter import *
+from tkinter import * 
 from tkinter import messagebox, filedialog
 import fitz as fi
 import openpyxl
+from openpyxl.styles import Alignment
 import pytesseract
 from pdf2image import convert_from_path
 from pathlib import Path
 from PIL import Image
 import cv2
 import numpy as np
+import os
+import time
+from io import BytesIO
+from azure.cognitiveservices.vision.computervision import ComputerVisionClient
+from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
+from msrest.authentication import CognitiveServicesCredentials
 
 def rotate_image(image, angle):
     (h, w) = image.shape[:2]
@@ -17,19 +24,38 @@ def rotate_image(image, angle):
     return rotated_image
 
 def handwritten(images):
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    subscription_key = '32fffbb0520645b0bdbae15bb1387a11'
+    endpoint = 'https://sneha23.cognitiveservices.azure.com/' 
+    
+    computervision_client = ComputerVisionClient(endpoint, CognitiveServicesCredentials(subscription_key))
     texts = []
+
     for image in images:
-        image = np.array(image)
-        image = rotate_image(image, -90)
-        gray_image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        _, thresh_image = cv2.threshold(gray_image, 128, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        text = pytesseract.image_to_string(thresh_image, config='--psm 6')
-        texts.append(text.strip())
+        open_cv_image = np.array(image)
+        _, buffer = cv2.imencode('.png', open_cv_image)
+        image_stream = BytesIO(buffer)
+
+        ocr_result = computervision_client.read_in_stream(image_stream, raw=True)
+        operation_location = ocr_result.headers['Operation-Location']
+        operation_id = operation_location.split('/')[-1]
+
+        while True:
+            result = computervision_client.get_read_result(operation_id)
+            if result.status not in ['notStarted', 'running']:
+                break
+            time.sleep(1)
+
+        if result.status == OperationStatusCodes.succeeded:
+            for page in result.analyze_result.read_results:
+                for line in page.lines:
+                    filtered_words = [word for word in line.text.split() if len(word) > 5]
+                    if filtered_words:
+                        texts.append(' '.join(filtered_words))
+
     return texts
 
+
 def iconic(pdf_path):
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     ann = []
     try:
         with fi.open(pdf_path) as doc:
@@ -82,9 +108,7 @@ def extract_text_from_blue_boxes(images):
 
     return executors, reviewers
 
-
 def extract_red_text(images):
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     extracted_text = []
     
     lower_red1 = np.array([0, 50, 50])
@@ -138,8 +162,6 @@ def extract_designation_numbers(images):
 
     return design_numbers
 
-import os
-
 def process_pdfs(pdf_paths, output_excel='output.xlsx'):
     if os.path.exists(output_excel):
         workbook = openpyxl.load_workbook(output_excel)
@@ -155,6 +177,10 @@ def process_pdfs(pdf_paths, output_excel='output.xlsx'):
         sheet["C1"] = "Executor"
         sheet["D1"] = "Reviewer"
         sheet["E1"] = "Comments"
+        sheet.column_dimensions['B'].width = 12
+        sheet.column_dimensions['C'].width = 15
+        sheet.column_dimensions['D'].width = 15
+        sheet.column_dimensions['E'].width = 40
         row = 2 
 
     for pdf_path in pdf_paths:
@@ -166,39 +192,50 @@ def process_pdfs(pdf_paths, output_excel='output.xlsx'):
             handwritten_texts = handwritten(images)
             iconic_texts = iconic(pdf_path)
 
-            comments = " ".join(red_texts + iconic_texts + handwritten_texts )
+            comments = []
+            comments.extend(iconic_texts)
+            comments.extend(red_texts)
+            comments.extend(handwritten_texts) 
+
+            comments_str = "\n".join(comments)
 
             for design_number, executor, reviewer in zip(design_numbers, executors, reviewers):
-                sheet[f"A{row}"] = row-1
+                sheet[f"A{row}"] = row - 1
                 sheet[f"B{row}"] = design_number
                 sheet[f"C{row}"] = executor
                 sheet[f"D{row}"] = reviewer
-                sheet[f"E{row}"] = comments             
-                row += 1
-            print(design_numbers)
-            print(executors)
-            print(reviewers)
-            print(comments)
+                sheet[f"E{row}"] = comments_str 
+                
+                sheet[f"A{row}"].alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
+                sheet[f"B{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+                sheet[f"C{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+                sheet[f"D{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+                sheet[f"E{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+                
+                line_count = comments_str.count('\n') + 1 
+                height_per_line = 15 
+                total_height = line_count * height_per_line
+                sheet.row_dimensions[row].height = total_height
+
+                row += 1 
 
     workbook.save(output_excel)
-    print(f"Information extracted and appended to {output_excel}")
 
-def all():
-    try:
-        pdf_paths = filedialog.askopenfilenames(title="Select PDFs", filetypes=[("PDF Files", "*.pdf")])
-        if not pdf_paths:
-            messagebox.showwarning("No files selected", "Please select one or more PDF files.")
-            return
-        output_excel = 'output_excel.xlsx'
-        process_pdfs(pdf_paths, output_excel)
-        messagebox.showinfo("Success", f"Information extracted and saved to {output_excel}")
-        
-    except Exception as e:
-        messagebox.showerror("Error", f"An error occurred: {str(e)}")
+    for col in ['B', 'C', 'D', 'E']:
+        max_length = 0
+        for cell in sheet[col]:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        sheet.column_dimensions[col].width = max_length + 2 
 
-def main_screen():
-    global screen
-    
+    messagebox.showinfo("Success", f"Information extracted and saved to {output_excel}")
+
+def select_files():
+    files = filedialog.askopenfilenames(filetypes=[("PDF files", "*.pdf")])
+    if files:
+        process_pdfs(files)
+
+def create_gui():
     screen = Tk()
     screen.geometry("400x500+600+50")
     screen.title("Pic2Sheet")
@@ -206,8 +243,9 @@ def main_screen():
     
     Label(text="Pic2Sheet", font=("Arial", 30), bg="#0a3542", fg="white").pack(pady=50) 
 
-    Button(text="Process PDFs", font=("Arial", 20), height=2, width=20, bg="#5c909c", fg="white", bd=0, command=all).pack(pady=20)
+    Button(text="Process PDFs", font=("Arial", 20), height=2, width=20, bg="#5c909c", fg="white", bd=0, command=select_files).pack(pady=20)
 
     screen.mainloop()
 
-main_screen()
+if __name__ == "__main__":
+    create_gui()
