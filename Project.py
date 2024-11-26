@@ -5,12 +5,16 @@ import openpyxl
 from openpyxl.styles import Alignment
 import pytesseract
 from pdf2image import convert_from_path
-from pathlib import Path
-from PIL import Image
 import cv2
 import numpy as np
 import os
 import time
+from io import BytesIO
+from azure.cognitiveservices.vision.computervision import ComputerVisionClient
+from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
+from msrest.authentication import CognitiveServicesCredentials
+import re
+from spellchecker import SpellChecker
 from io import BytesIO
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
@@ -162,7 +166,43 @@ def extract_designation_numbers(images):
 
     return design_numbers
 
-def process_pdfs(pdf_paths, output_excel='output.xlsx'):
+def preprocess_text(text):
+    words = text.split()
+    corrected_words = []
+
+    for word in words:
+        spell = SpellChecker()
+        corrected_word = spell.correction(word) 
+        if corrected_word: 
+            corrected_words.append(corrected_word)
+        else:
+            corrected_words.append(word) 
+    corrected_words = [word for word in corrected_words if word is not None]
+
+    processed_sentence = ' '.join(corrected_words)
+
+    return processed_sentence
+
+
+import re
+
+def extract_name_and_date(text):
+    date_pattern = r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}, \d{4}\b"
+    date_match = re.search(date_pattern, text)
+    date = date_match.group(0) if date_match else "NA"
+
+    text = text.split(' at ')[0].strip()
+
+    name = re.sub(r'[^A-Za-z ]', '', text).strip()
+
+    if not name:
+        name = "NA"
+
+    return name, date
+
+
+def process_pdfs(pdf_paths, output_excel='output.xlsx', contains_handwritten=False):
+    # Your implementation here
     if os.path.exists(output_excel):
         workbook = openpyxl.load_workbook(output_excel)
         sheet = workbook.active
@@ -175,12 +215,16 @@ def process_pdfs(pdf_paths, output_excel='output.xlsx'):
         sheet["A1"] = "Sr no."
         sheet["B1"] = "Design Number"
         sheet["C1"] = "Executor"
-        sheet["D1"] = "Reviewer"
-        sheet["E1"] = "Comments"
+        sheet["D1"] = "Executed Date" 
+        sheet["E1"] = "Reviewer"
+        sheet["F1"] = "Reviewed Date"  
+        sheet["G1"] = "Comments"
         sheet.column_dimensions['B'].width = 12
         sheet.column_dimensions['C'].width = 15
         sheet.column_dimensions['D'].width = 15
-        sheet.column_dimensions['E'].width = 40
+        sheet.column_dimensions['E'].width = 15
+        sheet.column_dimensions['F'].width = 15
+        sheet.column_dimensions['G'].width = 40
         row = 2 
 
     for pdf_path in pdf_paths:
@@ -197,31 +241,38 @@ def process_pdfs(pdf_paths, output_excel='output.xlsx'):
             comments.extend(red_texts)
             comments.extend(handwritten_texts) 
 
-            comments_str = "\n".join(comments)
+            comments_str = "\n".join([preprocess_text(comment) for comment in comments])
 
             for design_number, executor, reviewer in zip(design_numbers, executors, reviewers):
+                executor_name, executor_date = extract_name_and_date(executor)
+                reviewer_name, reviewer_date = extract_name_and_date(reviewer)
+                
                 sheet[f"A{row}"] = row - 1
                 sheet[f"B{row}"] = design_number
-                sheet[f"C{row}"] = executor
-                sheet[f"D{row}"] = reviewer
-                sheet[f"E{row}"] = comments_str 
+                sheet[f"C{row}"] = executor_name
+                sheet[f"D{row}"] = executor_date
+                sheet[f"E{row}"] = reviewer_name
+                sheet[f"F{row}"] = reviewer_date
+                sheet[f"G{row}"] = comments_str
                 
                 sheet[f"A{row}"].alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
                 sheet[f"B{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
                 sheet[f"C{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
                 sheet[f"D{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
                 sheet[f"E{row}"].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-                
-                line_count = comments_str.count('\n') + 1 
-                height_per_line = 15 
+                sheet[f"F{row}"].alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
+                sheet[f"G{row}"].alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
+
+                line_count = comments_str.count('\n') + 1
+                height_per_line = 15
                 total_height = line_count * height_per_line
                 sheet.row_dimensions[row].height = total_height
 
-                row += 1 
+                row += 1
 
     workbook.save(output_excel)
 
-    for col in ['B', 'C', 'D', 'E']:
+    for col in ['B', 'C', 'D', 'E', 'F', 'G']:
         max_length = 0
         for cell in sheet[col]:
             if cell.value:
@@ -230,20 +281,24 @@ def process_pdfs(pdf_paths, output_excel='output.xlsx'):
 
     messagebox.showinfo("Success", f"Information extracted and saved to {output_excel}")
 
-def select_files():
+def select_files(handwritten_option_value):
     files = filedialog.askopenfilenames(filetypes=[("PDF files", "*.pdf")])
     if files:
-        process_pdfs(files)
+        process_pdfs(files, contains_handwritten=handwritten_option_value == 1)
 
 def create_gui():
     screen = Tk()
     screen.geometry("400x500+600+50")
     screen.title("Pic2Sheet")
     screen.configure(background="#0a3542") 
-    
+
+    handwritten_option = IntVar(value=0)
+
     Label(text="Pic2Sheet", font=("Arial", 30), bg="#0a3542", fg="white").pack(pady=50) 
 
-    Button(text="Process PDFs", font=("Arial", 20), height=2, width=20, bg="#5c909c", fg="white", bd=0, command=select_files).pack(pady=20)
+    Button(text="Process PDFs", font=("Arial", 20), height=2, width=20, bg="#5c909c", fg="white", bd=0, command=lambda: select_files(handwritten_option.get())).pack(pady=20)
+    Checkbutton(screen, text="Contains handwritten notes", variable=handwritten_option, onvalue=1, offvalue=0, font=("Arial", 12), bg="#0a3542", fg="white", selectcolor="#5c909c").pack(pady=10)
+
 
     screen.mainloop()
 
