@@ -6,6 +6,7 @@ from openpyxl.styles import Alignment
 import pytesseract
 from pdf2image import convert_from_path
 import cv2
+import re
 import numpy as np
 import os
 import time
@@ -57,7 +58,6 @@ def handwritten(images):
                         texts.append(' '.join(filtered_words))
 
     return texts
-
 
 def iconic(pdf_path):
     ann = []
@@ -183,9 +183,6 @@ def preprocess_text(text):
 
     return processed_sentence
 
-
-import re
-
 def extract_name_and_date(text):
     date_pattern = r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}, \d{4}\b"
     date_match = re.search(date_pattern, text)
@@ -200,9 +197,8 @@ def extract_name_and_date(text):
 
     return name, date
 
-
 def process_pdfs(pdf_paths, output_excel='output.xlsx', contains_handwritten=False):
-    # Your implementation here
+    
     if os.path.exists(output_excel):
         workbook = openpyxl.load_workbook(output_excel)
         sheet = workbook.active
