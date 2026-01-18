@@ -29,8 +29,8 @@ def rotate_image(image, angle):
     return rotated_image
 
 def handwritten(images):
-    subscription_key = '32fffbb0520645b0bdbae15bb1387a11'
-    endpoint = 'https://sneha23.cognitiveservices.azure.com/' 
+    subscription_key = 'subscription key'
+    endpoint = 'endpoint'
     
     computervision_client = ComputerVisionClient(endpoint, CognitiveServicesCredentials(subscription_key))
     texts = []
